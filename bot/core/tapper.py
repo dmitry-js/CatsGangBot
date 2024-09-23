@@ -231,6 +231,9 @@ class Tapper:
     
     @error_handler
     async def run(self) -> None:
+        # Log the proxy being used with the session name
+        logger.info(f"{self.session_name} | Using proxy: {self.proxy if self.proxy else 'No proxy'}")
+
         if settings.USE_RANDOM_DELAY_IN_RUN:
                 random_delay = random.randint(settings.RANDOM_DELAY_IN_RUN[0], settings.RANDOM_DELAY_IN_RUN[1])
                 logger.info(f"{self.session_name} | Bot will start in <y>{random_delay}s</y>")
@@ -247,8 +250,14 @@ class Tapper:
                 if not proxy_conn.closed:
                     proxy_conn.close()
 
+        GREEN = "\033[92m"
+        RESET = "\033[0m"
+
         if self.proxy:
-            await self.check_proxy(http_client=http_client)
+            logger.info(f"{GREEN}{self.session_name} | Using proxy: {GREEN}{self.proxy}{RESET}")
+            if not await self.check_proxy(http_client=http_client, proxy=self.proxy):
+                logger.error(f"{self.session_name} | Proxy is not working: {self.proxy}. Skipping this session.")
+                return
         
         if settings.FAKE_USERAGENT:            
             http_client.headers['User-Agent'] = generate_random_user_agent(device_type='android', browser_type='chrome')
