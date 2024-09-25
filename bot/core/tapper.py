@@ -2,6 +2,7 @@ import asyncio
 import random
 from urllib.parse import unquote
 import uuid
+from time import time
 
 import aiohttp
 from aiohttp_proxy import ProxyConnector
@@ -174,47 +175,6 @@ class Tapper:
                 return None
     
     @error_handler
-    async def join_and_mute_tg_channel(self, link: str):
-        await asyncio.sleep(delay=random.randint(15, 30))
-        
-        if not self.tg_client.is_connected:
-            await self.tg_client.connect()
-            
-        parsed_link = link if 'https://t.me/+' in link else link[13:]
-        try:
-            try:
-                chat = await self.tg_client.join_chat(parsed_link)
-                logger.info(f"{self.session_name} | Successfully joined chat <y>{chat.title}</y>")
-            except Exception as join_error:
-                if "USER_ALREADY_PARTICIPANT" in str(join_error):
-                    logger.info(f"{self.session_name} | Already a member of the chat: {link}")
-                    chat = await self.tg_client.get_chat(parsed_link)
-                else:
-                    
-                    raise join_error
-
-            chat_id = chat.id
-            chat_title = getattr(chat, 'title', link)
-
-            await asyncio.sleep(random.randint(5, 10))
-
-            peer = await self.tg_client.resolve_peer(chat_id)
-            await self.tg_client.invoke(account.UpdateNotifySettings(
-                peer=InputNotifyPeer(peer=peer),
-                settings=InputPeerNotifySettings(mute_until=2147483647)
-            ))
-            logger.info(f"{self.session_name} | Successfully muted chat <y>{chat_title}</y>")
-
-        except Exception as e:
-            logger.error(f"{self.session_name} | Error joining/muting channel {link}: {str(e)}")
-
-        finally:
-            if self.tg_client.is_connected:
-                await self.tg_client.disconnect()
-
-        await asyncio.sleep(random.randint(10, 20))
-    
-    @error_handler
     async def get_tasks(self, http_client):
         return await self.make_request(http_client, 'GET', endpoint="/tasks/user", data={'group': 'cats'})
     
@@ -242,13 +202,13 @@ class Tapper:
         proxy_conn = ProxyConnector().from_url(self.proxy) if self.proxy else None
         http_client = aiohttp.ClientSession(headers=headers, connector=proxy_conn)
         
-        ref_id, init_data = await self.get_tg_web_data()
-        if not init_data:
-            if not http_client.closed:
-                await http_client.close()
-            if proxy_conn:
-                if not proxy_conn.closed:
-                    proxy_conn.close()
+        # ref_id, init_data = await self.get_tg_web_data()
+        # if not init_data:
+        #     if not http_client.closed:
+        #         await http_client.close()
+        #     if proxy_conn:
+        #         if not proxy_conn.closed:
+        #             proxy_conn.close()
 
         GREEN = "\033[92m"
         RESET = "\033[0m"
@@ -262,6 +222,7 @@ class Tapper:
         if settings.FAKE_USERAGENT:            
             http_client.headers['User-Agent'] = generate_random_user_agent(device_type='android', browser_type='chrome')
 
+        token_expiration = 0
         while True:
             try:
                 if http_client.closed:
@@ -274,19 +235,27 @@ class Tapper:
                     if settings.FAKE_USERAGENT:            
                         http_client.headers['User-Agent'] = generate_random_user_agent(device_type='android', browser_type='chrome')
                 
-                http_client.headers['Authorization'] = f"tma {init_data}"
+                current_time = time()
+                if current_time >= token_expiration:
+                    if (token_expiration != 0): # Чтобы не пугались, скрою от вас когда происходит первый запуск
+                        logger.info(f"{self.session_name} | Token expired, refreshing...")
+                    ref_id, init_data = await self.get_tg_web_data()
+                    http_client.headers['Authorization'] = f"tma {init_data}"
+                    user = await self.login(http_client=http_client, ref_id=ref_id)
                 
-                user = await self.login(http_client=http_client, ref_id=ref_id)
-                if not user:
-                    logger.error(f"{self.session_name} | Failed to login")
-                    await http_client.close()
-                    if proxy_conn:
-                        if not proxy_conn.closed:
-                            proxy_conn.close()
-                    continue
+                    if not user:
+                        logger.error(f"{self.session_name} | Failed to login")
+                        logger.info(f"{self.session_name} | Sleep <y>300s</y>")
+                        await asyncio.sleep(delay=300)
+                        continue
+                    else:
+                        logger.info(f"{self.session_name} | <y>Successfully logged in</y>")
+                        token_expiration = current_time + 3600
                 
-                logger.info(f"{self.session_name} | <y>Successfully logged in</y>")
                 logger.info(f"{self.session_name} | User ID: <y>{user.get('id')}</y> | Telegram Age: <y>{user.get('telegramAge')}</y> | Points: <y>{user.get('totalRewards')}</y>")
+                UserHasOgPass = user.get('hasOgPass', False)
+                logger.info(f"{self.session_name} | User has OG Pass: <y>{UserHasOgPass}</y>")
+                
                 data_task = await self.get_tasks(http_client=http_client)
                 if data_task is not None and data_task.get('tasks', {}):
                     for task in data_task.get('tasks'):
@@ -297,19 +266,19 @@ class Tapper:
                         title = task.get('title')
                         reward = task.get('rewardPoints')
                         type_=('check' if type == 'SUBSCRIBE_TO_CHANNEL' else 'complete')
-                        #if type_ == 'check':
-                        #    await self.join_and_mute_tg_channel(link=task.get('params').get('channelUrl'))
-                        #    await asyncio.sleep(2)
                         done_task = await self.done_tasks(http_client=http_client, task_id=id, type_=type_)
                         if done_task and (done_task.get('success', False) or done_task.get('completed', False)):
                             logger.info(f"{self.session_name} | Task <y>{title}</y> done! Reward: {reward}")
-                                
                 else:
                     logger.error(f"{self.session_name} | No tasks")
                 
-                reward = await self.send_cats(http_client=http_client)
-                if reward:
-                    logger.info(f"{self.session_name} | Reward from Avatar quest: <y>{reward}</y>")
+                
+            
+                for _ in range(3 if UserHasOgPass else 1):
+                    reward = await self.send_cats(http_client=http_client)
+                    if reward:
+                        logger.info(f"{self.session_name} | Reward from Avatar quest: <y>{reward}</y>")
+                    await asyncio.sleep(random.randint(5, 7))
                 
                 
                 await http_client.close()
